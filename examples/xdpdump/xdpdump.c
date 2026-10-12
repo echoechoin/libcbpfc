@@ -1,0 +1,264 @@
+/*
+ * xdpdump.c - dump packets matching a tcpdump-style filter into a pcap file.
+ *
+ *     sudo ./xdpdump -i eth0 -n 100 "udp and port 53"
+ *
+ * The filter expression is compiled by libpcap to cBPF, translated to an eBPF
+ * fragment and spliced into xdpdump.bpf.o, which holds the XDP program and
+ * the filter_pcap placeholder. cbpfc_inject() hands back a loaded libbpf
+ * object; the program is attached to the interface and matching packets are
+ * pushed through the host's ring buffer into a pcap file until the requested
+ * count is reached. Nothing is ever dropped - the program returns XDP_PASS for
+ * every packet, so the interface keeps working normally.
+ *
+ * Needs root: loading and attaching an XDP program requires CAP_BPF.
+ */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+#include <errno.h>
+#include <getopt.h>
+#include <net/if.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include <linux/bpf.h>
+#include <linux/if_link.h>          /* XDP_FLAGS_* */
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
+
+#include "cbpfc.h"
+#include "pcap_writer.h"
+#include "xdpdump_event.h"
+
+/* The program in xdpdump.bpf.c, and the map it pushes events through. */
+#define HOST_PROG  "xdp_dump"
+#define HOST_EVENTS "events"
+
+#ifndef XDPDUMP_DEFAULT_OBJ
+#define XDPDUMP_DEFAULT_OBJ "xdpdump.bpf.o"
+#endif
+
+static volatile sig_atomic_t g_stop;
+
+static void on_signal(int sig)
+{
+	g_stop = 1;
+	signal(sig, SIG_DFL);
+}
+
+struct capture {
+	struct pcap_writer *out;
+	unsigned long       captured;
+	unsigned long       limit;
+	int                 verbose;
+};
+
+static int on_event(void *user, void *data, size_t len)
+{
+	struct capture *c = user;
+	const struct xdpdump_event *e = data;
+
+	if (len < sizeof(*e))
+		return 0;
+
+	c->captured++;
+	pcap_writer_write(c->out, e->data, e->caplen, e->len);
+
+	if (c->verbose && e->caplen >= 34)
+		printf("  #%lu  len=%u caplen=%u\n", c->captured, e->len, e->caplen);
+	return 0;
+}
+
+static void usage(const char *argv0)
+{
+	fprintf(stderr,
+		"usage: %s -i <iface> -n <count> [options] '<filter expression>'\n"
+		"\n"
+		"  -i, --iface <iface>    interface to capture on (required)\n"
+		"  -n, --count <n>        stop after capturing n packets (required)\n"
+		"  -w, --write <file>     output pcap file (default: xdpdump.pcap)\n"
+		"  -o, --object <file>    compiled XDP host object\n"
+		"                         (default: %s)\n"
+		"  -D, --drv              attach in native XDP mode instead of generic\n"
+		"  -t, --timeout <sec>    give up after this long (default: no limit)\n"
+		"  -v, --verbose          print one line per captured packet\n"
+		"\n"
+		"example:\n"
+		"  sudo %s -i eth0 -n 100 'udp and port 53' -w dns.pcap\n",
+		argv0, XDPDUMP_DEFAULT_OBJ, argv0);
+}
+
+int main(int argc, char **argv)
+{
+	const char *iface = NULL, *outfile = "xdpdump.pcap";
+	const char *objpath = XDPDUMP_DEFAULT_OBJ;
+	const char *expr = NULL;
+	unsigned long limit = 0;
+	int   timeout = 0, drv_mode = 0, verbose = 0;
+	int   ifindex, prog_fd = -1, events_fd = -1;
+	__u32 xdp_flags;
+	char  err[256] = "";
+	struct cbpfc_expr *e = NULL;
+	struct bpf_object *obj = NULL;
+	struct bpf_program *prog;
+	struct ring_buffer *rb = NULL;
+	struct capture cap;
+	struct pcap_writer *out = NULL;
+	time_t started;
+	int    rc = 1, opt;
+
+	/* line buffered: output stays readable when redirected */
+	setvbuf(stdout, NULL, _IOLBF, 0);
+
+	static const struct option long_opts[] = {
+		{ "iface",   required_argument, NULL, 'i' },
+		{ "count",   required_argument, NULL, 'n' },
+		{ "write",   required_argument, NULL, 'w' },
+		{ "object",  required_argument, NULL, 'o' },
+		{ "drv",     no_argument,       NULL, 'D' },
+		{ "timeout", required_argument, NULL, 't' },
+		{ "verbose", no_argument,       NULL, 'v' },
+		{ "help",    no_argument,       NULL, 'h' },
+		{ NULL, 0, NULL, 0 },
+	};
+
+	while ((opt = getopt_long(argc, argv, "i:n:w:o:Dt:vh", long_opts, NULL)) != -1) {
+		switch (opt) {
+		case 'i': iface   = optarg; break;
+		case 'n': limit   = strtoul(optarg, NULL, 10); break;
+		case 'w': outfile = optarg; break;
+		case 'o': objpath = optarg; break;
+		case 'D': drv_mode = 1; break;
+		case 't': timeout = atoi(optarg); break;
+		case 'v': verbose = 1; break;
+		case 'h': usage(argv[0]); return 0;
+		default:  usage(argv[0]); return 2;
+		}
+	}
+
+	if (optind < argc)
+		expr = argv[optind];
+
+	if (!iface || !expr || limit == 0) {
+		usage(argv[0]);
+		return 2;
+	}
+	if (geteuid() != 0) {
+		fprintf(stderr, "xdpdump: needs root (CAP_BPF)\n");
+		return 1;
+	}
+
+	ifindex = (int)if_nametoindex(iface);
+	if (!ifindex) {
+		fprintf(stderr, "no such interface: %s\n", iface);
+		return 1;
+	}
+
+	/* 1. filter expression -> cBPF */
+	e = cbpfc_expr_new(expr, err, sizeof(err));
+	if (!e) {
+		fprintf(stderr, "bad filter expression: %s\n", err);
+		return 1;
+	}
+
+	/* 2. replace filter_pcap in the host object and load it */
+	{
+		size_t n;
+		const struct cbpfc_insn *insns = cbpfc_expr_insns(e, &n);
+
+		obj = cbpfc_inject(objpath, "filter_pcap", insns, n, err, sizeof(err));
+		if (!obj) {
+			fprintf(stderr, "cannot inject the filter: %s\n", err);
+			goto out;
+		}
+	}
+
+	/* 3. pick up the program and the host's ring buffer */
+	prog = bpf_object__find_program_by_name(obj, HOST_PROG);
+	if (!prog) {
+		fprintf(stderr, "no program named \"%s\" in %s\n", HOST_PROG, objpath);
+		goto out_obj;
+	}
+	prog_fd = bpf_program__fd(prog);        /* owned by the object */
+
+	{
+		struct bpf_map *m = bpf_object__find_map_by_name(obj, HOST_EVENTS);
+
+		if (!m) {
+			fprintf(stderr, "no map named \"%s\" in %s\n", HOST_EVENTS, objpath);
+			goto out_obj;
+		}
+		events_fd = bpf_map__fd(m);
+	}
+
+	/* 4. attach */
+	xdp_flags = drv_mode ? XDP_FLAGS_DRV_MODE : XDP_FLAGS_SKB_MODE;
+	if (bpf_xdp_attach(ifindex, prog_fd, xdp_flags, NULL) != 0) {
+		fprintf(stderr, "cannot attach XDP to %s: %s\n", iface, strerror(errno));
+		goto out_obj;
+	}
+
+	out = pcap_writer_open(outfile, err, sizeof(err));
+	if (!out) {
+		fprintf(stderr, "%s\n", err);
+		goto out_detach;
+	}
+
+	rb = ring_buffer__new(events_fd, on_event, &cap, NULL);
+	if (!rb) {
+		fprintf(stderr, "cannot create the ring buffer: %s\n", strerror(errno));
+		goto out_detach;
+	}
+
+	cap.out      = out;
+	cap.captured = 0;
+	cap.limit    = limit;
+	cap.verbose  = verbose;
+
+	printf("capturing on %s (%s mode)  filter: %s\n",
+	       iface, drv_mode ? "native" : "generic", expr);
+	printf("stopping after %lu packets, writing to %s   (Ctrl+C to stop)\n",
+	       limit, outfile);
+
+	signal(SIGINT, on_signal);
+	signal(SIGTERM, on_signal);
+
+	/* 5. collect */
+	started = time(NULL);
+	while (!g_stop && cap.captured < limit) {
+		int n = ring_buffer__poll(rb, 200);
+
+		if (n < 0 && n != -EINTR) {
+			fprintf(stderr, "ring buffer error: %s\n", strerror(-n));
+			break;
+		}
+		if (timeout > 0 && time(NULL) - started >= timeout)
+			break;
+	}
+
+	printf("captured %lu packet%s\n", cap.captured,
+	       cap.captured == 1 ? "" : "s");
+	rc = 0;
+
+out_detach:
+	bpf_xdp_detach(ifindex, xdp_flags, NULL);
+out_obj:
+	/* The ring buffer holds a dup of the map fd, but tear it down first so
+	 * the order does not depend on that. prog_fd and events_fd belong to the
+	 * object: closing it closes them. */
+	if (rb) {
+		ring_buffer__free(rb);
+		rb = NULL;
+	}
+	bpf_object__close(obj);
+out:
+	pcap_writer_close(out);
+	cbpfc_expr_free(e);
+	return rc;
+}
