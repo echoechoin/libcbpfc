@@ -109,23 +109,30 @@ static int find_section(Elf *e, size_t shstrndx, const char *name, GElf_Shdr *ou
 	return -1;
 }
 
+static int find_symtab(Elf *e, Elf_Scn **scn_out, GElf_Shdr *sh_out)
+{
+	Elf_Scn *scn = NULL;
+
+	while ((scn = elf_nextscn(e, scn))) {
+		GElf_Shdr s;
+
+		if (gelf_getshdr(scn, &s) && s.sh_type == SHT_SYMTAB) {
+			*scn_out = scn;
+			*sh_out  = s;
+			return 0;
+		}
+	}
+	return -1;
+}
+
 static int find_func(Elf *e, const char *name, struct found *f)
 {
-	Elf_Scn   *scn, *symscn = NULL;
+	Elf_Scn   *symscn;
 	GElf_Shdr  sh;
 	Elf_Data  *symdata;
 	int        i, n;
 
-	for (scn = NULL; (scn = elf_nextscn(e, scn)); ) {
-		GElf_Shdr s;
-
-		if (gelf_getshdr(scn, &s) && s.sh_type == SHT_SYMTAB) {
-			symscn = scn;
-			sh = s;
-			break;
-		}
-	}
-	if (!symscn)
+	if (find_symtab(e, &symscn, &sh) != 0)
 		return -1;
 
 	symdata = elf_getdata(symscn, NULL);
@@ -153,22 +160,6 @@ static int find_func(Elf *e, const char *name, struct found *f)
 		f->symtab_entsize  = (size_t)sh.sh_entsize;
 		f->symtab_count    = (size_t)(sh.sh_size / sh.sh_entsize);
 		return 0;
-	}
-	return -1;
-}
-
-static int find_symtab(Elf *e, Elf_Scn **scn_out, GElf_Shdr *sh_out)
-{
-	Elf_Scn *scn = NULL;
-
-	while ((scn = elf_nextscn(e, scn))) {
-		GElf_Shdr s;
-
-		if (gelf_getshdr(scn, &s) && s.sh_type == SHT_SYMTAB) {
-			*scn_out = scn;
-			*sh_out  = s;
-			return 0;
-		}
 	}
 	return -1;
 }
