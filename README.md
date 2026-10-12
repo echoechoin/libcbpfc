@@ -22,8 +22,9 @@ sudo ./build/tests/test_ebpf ./build/tests/skeleton.o
 
 Dependencies: `libpcap` (compiles expressions and provides the reference
 interpreter), `libbpf` (loads the patched host object), `libelf` (locates
-sections and symbols in it), `clang` (only to build host objects), a kernel
-with `BPF_JMP32` (5.1+).
+sections and symbols in it), `clang` (only to build host objects), and a kernel
+with BPF-to-BPF calls (4.16+) - the injected filter is a function of the host
+program.
 
 ## Example: xdpdump
 
@@ -128,14 +129,3 @@ The splice is cheap because a relocatable ELF stores everything except
 Growing the section that holds the placeholder therefore only means updating
 that section's `sh_offset`/`sh_size` and the placeholder's `st_size` - and the
 rebuilt section is appended at the end of the file, so nothing else moves.
-
-## Limitations
-
-- The library emits a fragment; the program type is whatever the host object's
-  section says (`tc`, `xdp`, ...). Nothing is generated for a bare hook with no
-  host program.
-- `ld len` maps to `data_end - data` (the captured length), not libpcap's wire
-  length. The two differ only for truncated captures.
-- The placeholder must live in `.text`; that is the only section libbpf treats
-  as a home for subprograms, and a function anywhere else is rejected as a
-  static program.

@@ -281,6 +281,15 @@ static void emit_cond(struct tl *t, uint8_t jop, int by_x, uint32_t k,
 		cls = BPF_X;
 		src = R_X;
 		imm = 0;
+	} else if ((int32_t)k < 0) {
+		/* A 64-bit compare sign-extends a BPF_K operand, while cBPF's A is
+		 * zero-extended: `jeq #0xC0A80101` would compare 0xFFFFFFFFC0A80101
+		 * against 0x00000000C0A80101 and never match. Load the constant with
+		 * a 32-bit move - which zero-extends - and compare registers. */
+		e_ins(t, BPF_ALU | BPF_MOV | BPF_K, R_T0, 0, 0, (int32_t)k);
+		cls = BPF_X;
+		src = R_T0;
+		imm = 0;
 	} else {
 		cls = BPF_K;
 		src = 0;
@@ -288,29 +297,23 @@ static void emit_cond(struct tl *t, uint8_t jop, int by_x, uint32_t k,
 	}
 
 	/* With a register operand, imm is a reserved field and must be zero,
-	 * otherwise the verifier reports "BPF_JMP/JMP32 uses reserved fields". */
+	 * otherwise the verifier reports "BPF_JMP uses reserved fields". */
 	if (src)
 		imm = 0;
 
-	/* Comparisons are always 32-bit. A 64-bit BPF_JMP with a BPF_K operand
-	 * sign-extends the immediate, while cBPF's A is zero-extended, so
-	 * `jeq #0xC0A80101` would never match. */
-#define CBPF_CJMP (BPF_JMP32)
-
 	if (tt == pc + 1 && jop != BPF_JSET) {
 		/* The true branch falls through: invert and emit one jump. */
-		e_fix(t, CBPF_CJMP | invert_jmp(jop) | cls, R_A, src, imm, lf);
+		e_fix(t, BPF_JMP | invert_jmp(jop) | cls, R_A, src, imm, lf);
 	} else if (tf == pc + 1) {
-		e_fix(t, CBPF_CJMP | jop | cls, R_A, src, imm, lt);
+		e_fix(t, BPF_JMP | jop | cls, R_A, src, imm, lt);
 	} else if (tt == pc + 1) {
 		/* jset has no single-instruction inverse. */
-		e_ins(t, CBPF_CJMP | BPF_JSET | cls, R_A, src, 1, imm);
+		e_ins(t, BPF_JMP | BPF_JSET | cls, R_A, src, 1, imm);
 		e_to_label(t, lf);
 	} else {
-		e_fix(t, CBPF_CJMP | jop | cls, R_A, src, imm, lt);
+		e_fix(t, BPF_JMP | jop | cls, R_A, src, imm, lt);
 		e_to_label(t, lf);
 	}
-#undef CBPF_CJMP
 }
 
 /* Return */
