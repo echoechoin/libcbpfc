@@ -4,6 +4,10 @@
 #ifndef CBPFC_INTERNAL_H
 #define CBPFC_INTERNAL_H
 
+/* The verifier only accepts packet offsets that fit in 16 bits; a load beyond
+ * that can never match, so both backends turn it into "no match". */
+#define MAX_PKT_OFF 0xFFFF
+
 /* Record the message cbpfc_errmsg() returns. Every public entry point that can
  * fail clears it first, so what comes back is always from the call that just
  * failed. */

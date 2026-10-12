@@ -46,9 +46,6 @@
 /* cBPF's scratch memory M[0..15]. The host function's frame is ours to use. */
 #define FRAG_M(k)       ((int)(-8 - 8 * (k)))
 
-/* The verifier only accepts packet offsets that fit in 16 bits. */
-#define MAX_PKT_OFF 0xFFFF
-
 struct fixup {
 	size_t at;      /* index of the instruction to patch */
 	size_t label;   /* target: a cBPF pc, or n for the trailing block */
