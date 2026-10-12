@@ -181,6 +181,44 @@ static int width_bytes(uint16_t code)
 	}
 }
 
+/* Does this instruction compile into nothing but "no match"? Four things do:
+ *
+ *   - an absolute packet load at a constant offset past the verifier's 16-bit
+ *     limit, and an indirect one likewise - neither can match any packet
+ *   - a constant division by zero
+ *   - a jump past the end of the program
+ *
+ * cBPF fails the whole filter for the last two, and so must we.
+ *
+ * The answer matters twice over. emit_one() turns them into a bail, and
+ * mark_reachable() has to leave them out of the walk: whichever instruction
+ * would have followed them is not reachable through them any more, and giving
+ * it code would put an instruction in the fragment that nothing jumps to -
+ * which the verifier rejects outright.
+ *
+ * Both callers ask this one function, so the two cannot disagree about which
+ * instructions those are. */
+static int always_fails(const struct cbpfc_insn *in, size_t pc, size_t n)
+{
+	switch (in->code) {
+	case BPF_LD  | BPF_W | BPF_ABS:
+	case BPF_LD  | BPF_H | BPF_ABS:
+	case BPF_LD  | BPF_B | BPF_ABS:
+	case BPF_LD  | BPF_W | BPF_IND:
+	case BPF_LD  | BPF_H | BPF_IND:
+	case BPF_LD  | BPF_B | BPF_IND:
+		return (uint64_t)in->k + (uint64_t)width_bytes(in->code) > MAX_PKT_OFF;
+	case BPF_LDX | BPF_B | BPF_MSH:
+		return (uint64_t)in->k + 1 > MAX_PKT_OFF;
+	case BPF_ALU | BPF_DIV | BPF_K:
+		return in->k == 0;
+	case BPF_JMP | BPF_JA:
+		return pc + 1 + (uint64_t)in->k >= n;
+	default:
+		return 0;
+	}
+}
+
 /* Loads are big endian; on a little-endian host that is a byte swap. */
 static void e_bswap(struct tl *t, int reg, int size)
 {
@@ -220,14 +258,7 @@ static void e_load_abs(struct tl *t, uint32_t k, int size)
 /* Indirect packet load at x + k, where x is a runtime value. */
 static void e_load_ind(struct tl *t, uint32_t k, int size)
 {
-	uint32_t end = k + (uint32_t)size;
-
-	if (end > MAX_PKT_OFF) {
-		/* The offset cannot fit in the verifier's 16-bit limit, so this
-		 * load can never match. */
-		e_bail(t);
-		return;
-	}
+	uint32_t end = k + (uint32_t)size;   /* always_fails() ruled out overflow */
 
 	/* x is unbounded as far as the verifier knows; bound it first so that
 	 * "packet pointer + x" is accepted. */
@@ -374,6 +405,11 @@ static int emit_one(struct tl *t, const struct cbpfc_insn *in, size_t pc, size_t
 {
 	int size;
 
+	if (always_fails(in, pc, n)) {
+		e_bail(t);
+		return 0;
+	}
+
 	switch (in->code) {
 
 	/* loads: immediate / packet length / scratch */
@@ -420,10 +456,7 @@ static int emit_one(struct tl *t, const struct cbpfc_insn *in, size_t pc, size_t
 	case BPF_LD | BPF_H | BPF_ABS:
 	case BPF_LD | BPF_B | BPF_ABS:
 		size = width_bytes(in->code);
-		if ((uint64_t)in->k + (uint64_t)size > MAX_PKT_OFF)
-			e_bail(t);
-		else
-			e_load_abs(t, in->k, size);
+		e_load_abs(t, in->k, size);
 		break;
 
 	case BPF_LD | BPF_W | BPF_IND:
@@ -433,10 +466,6 @@ static int emit_one(struct tl *t, const struct cbpfc_insn *in, size_t pc, size_t
 		break;
 
 	case BPF_LDX | BPF_B | BPF_MSH:                 /* ldxb 4*([k]&0xf) */
-		if ((uint64_t)in->k + 1 > MAX_PKT_OFF) {
-			e_bail(t);
-			break;
-		}
 		e_bound(t, (int32_t)(in->k + 1));
 		/* A constant offset fits the instruction's 16-bit `off` field only up
 		 * to 32767; beyond that it has to go on a copy of the pointer, the
@@ -472,12 +501,8 @@ static int emit_one(struct tl *t, const struct cbpfc_insn *in, size_t pc, size_t
 		e_ins(t, BPF_ALU | BPF_NEG, R_A, 0, 0, 0);
 		break;
 
-	/* Division by zero makes the whole filter fail (cBPF semantics). */
-	case BPF_ALU | BPF_DIV | BPF_K:
-		if (in->k == 0)
-			e_bail(t);
-		else
-			e_alu(t, BPF_DIV, 0, (int32_t)in->k);
+	case BPF_ALU | BPF_DIV | BPF_K:                 /* div #0 fails, above */
+		e_alu(t, BPF_DIV, 0, (int32_t)in->k);
 		break;
 	case BPF_ALU | BPF_DIV | BPF_X:
 		e_bail_if(t, BPF_JMP | BPF_JEQ | BPF_K, R_X, 0, 0);
@@ -512,12 +537,10 @@ static int emit_one(struct tl *t, const struct cbpfc_insn *in, size_t pc, size_t
 
 	/* jumps: target = pc + 1 + jt/jf */
 	case BPF_JMP | BPF_JA:
-		if (pc + 1 + in->k < n)
+		/* Past the end was handled above; here the target is in range, and
+		 * `ja #0` is the next instruction, which follows anyway. */
+		if (in->k != 0)
 			e_to_label(t, pc + 1 + in->k);
-		else if (pc + 1 + in->k == pc + 1)
-			break;                          /* jump to the next insn */
-		else
-			e_bail(t);                      /* past the end */
 		break;
 
 	case BPF_JMP | BPF_JEQ  | BPF_K: case BPF_JMP | BPF_JEQ  | BPF_X:
@@ -576,6 +599,9 @@ static void mark_reachable(const struct cbpfc_insn *p, size_t n, char *reach)
 		uint16_t c = p[pc].code;
 		size_t   nx[2];
 		int      k = 0, i;
+
+		if (always_fails(&p[pc], pc, n))
+			continue;                       /* nothing follows it */
 
 		if ((c & 0x07) == BPF_JMP) {
 			if (c == (BPF_JMP | BPF_JA)) {

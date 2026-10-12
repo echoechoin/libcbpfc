@@ -222,6 +222,21 @@ static unsigned rnd(void)
 	return (unsigned)(rnd_state >> 33);
 }
 
+/* Most packet offsets stay small so that the programs keep matching something,
+ * but a quarter of them come from the edges: where the verifier's 16-bit offset
+ * limit bites (32767/32768) and where a cBPF offset stops being usable at all
+ * (65535). */
+static uint32_t rnd_offset(void)
+{
+	static const uint32_t edge[] = {
+		0, 1, 2, 13, 14, 40, 32766, 32767, 32768, 65534, 65535,
+	};
+
+	if (rnd() % 4)
+		return rnd() % 64;
+	return edge[rnd() % (sizeof(edge) / sizeof(edge[0]))];
+}
+
 /* Build a random but well-formed cBPF program.
  *
  * The first 32 slots store distinct values into M[0..15]: libpcap's
@@ -275,9 +290,9 @@ static void random_program(struct cbpfc_insn *prog)
 			break;
 		case 0x00: case 0x01:                   /* ld / ldx */
 			if ((prog[i].code & 0x60) == 0x60)      prog[i].k = rnd() % 16;
-			else if ((prog[i].code & 0xe0) == 0xa0) prog[i].k = rnd() % 64;
+			else if ((prog[i].code & 0xe0) == 0xa0) prog[i].k = rnd_offset();
 			else if ((prog[i].code & 0xe0) == 0x80) prog[i].k = 0;
-			else                                    prog[i].k = rnd() % 40;
+			else                                    prog[i].k = rnd_offset();
 			break;
 		case 0x04:                              /* alu */
 			if (prog[i].code == 0x84)                               prog[i].k = 0;
