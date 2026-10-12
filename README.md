@@ -26,43 +26,6 @@ sections and symbols in it), `clang` (only to build host objects), and a kernel
 with BPF-to-BPF calls (4.16+) - the injected filter is a function of the host
 program.
 
-## Example: xdpdump
-
-`examples/xdpdump/` builds a small XDP capture tool. It takes a tcpdump-style filter,
-attaches the patched program to an interface and writes matching packets to a
-pcap file until it has the requested number:
-
-```sh
-sudo ./build/examples/xdpdump/xdpdump -i eth0 -n 100 'udp and port 53' -w dns.pcap
-```
-
-```
--i, --iface <iface>    interface to capture on (required)
--n, --count <n>        stop after capturing n packets (required)
--w, --write <file>     output pcap file (default: xdpdump.pcap)
--o, --object <file>    compiled XDP host object
--D, --drv              native XDP instead of generic
--p, --no-promisc       do not put the interface into promiscuous mode
--t, --timeout <sec>    give up after this long
--v, --verbose          print one line per captured packet
-```
-
-`examples/xdpdump/xdpdump.bpf.c` is the host: an XDP program with the `filter_pcap`
-placeholder and a ring buffer for the captured packets. It is compiled once at
-build time into `xdpdump.bpf.o`; only that object is needed at run time.
-Nothing is ever dropped - the program returns `XDP_PASS` for every packet, so
-the interface keeps working normally.
-
-One thing in it is worth knowing about:
-
-- **Packet copies.** The snapshot is taken in fixed-size chunks rather than with
-  `bpf_xdp_load_bytes()`. That helper's length argument is `ARG_CONST_SIZE`, so
-  the verifier must be able to prove it is non-zero and fits the destination -
-  and clang folds away every guard that would tell it so, because it knows the
-  length is just `data_end - data`. Constant-size copies compile into ordinary
-  packet bound checks, which the verifier always accepts. `caplen` therefore
-  ends up as the packet length rounded down to a multiple of 16.
-
 ## Usage
 
 Putting a filter into a program is three steps: compile the expression, inject
