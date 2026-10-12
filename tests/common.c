@@ -32,10 +32,15 @@ static void rnd_seed(uint64_t s)
 	rnd_state = s;
 }
 
+uint32_t cbpf_rand(uint64_t *state)
+{
+	*state = *state * 6364136223846793005ULL + 1442695040888963407ULL;
+	return (uint32_t)(*state >> 33);
+}
+
 static unsigned rnd(void)
 {
-	rnd_state = rnd_state * 6364136223846793005ULL + 1442695040888963407ULL;
-	return (unsigned)(rnd_state >> 33);
+	return cbpf_rand(&rnd_state);
 }
 
 size_t cbpf_test_packet(int i, uint8_t *pkt)

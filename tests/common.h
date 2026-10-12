@@ -16,6 +16,11 @@
 extern const char *const cbpf_test_exprs[];
 extern const int cbpf_test_expr_count;
 
+/* One step of the generator the tests draw data from. The caller owns the
+ * state, so each generator keeps its own stream: the packet corpus has to be
+ * the same no matter how many random cBPF programs a test has drawn first. */
+uint32_t cbpf_rand(uint64_t *state);
+
 /* Deterministic packet generator.
  *
  * Packet i is derived only from i, so every test sees the same corpus

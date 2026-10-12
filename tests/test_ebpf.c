@@ -218,8 +218,7 @@ static uint64_t rnd_state;
 
 static unsigned rnd(void)
 {
-	rnd_state = rnd_state * 6364136223846793005ULL + 1442695040888963407ULL;
-	return (unsigned)(rnd_state >> 33);
+	return cbpf_rand(&rnd_state);
 }
 
 /* Most packet offsets stay small so that the programs keep matching something,
