@@ -35,20 +35,18 @@ it into the host object, use the result.
 #include <cbpfc.h>
 
 /* 1. the filter expression -> cBPF, compiled by libpcap */
-char err[256];
-struct cbpfc_expr *e = cbpfc_expr_new("udp and port 53", err, sizeof err);
+struct cbpfc_expr *e = cbpfc_expr_new("udp and port 53");
 if (!e) {
-	fprintf(stderr, "bad filter: %s\n", err);
+	fprintf(stderr, "bad filter: %s\n", cbpfc_errmsg());
 	return 1;
 }
 size_t n;
 const struct cbpfc_insn *insns = cbpfc_expr_insns(e, &n);
 
 /* 2. replace the placeholder in the host object and load it */
-struct bpf_object *obj = cbpfc_inject("xdpdump.bpf.o", "filter_pcap",
-                                      insns, n, err, sizeof err);
+struct bpf_object *obj = cbpfc_inject("xdpdump.bpf.o", "filter_pcap", insns, n);
 if (!obj) {
-	fprintf(stderr, "cannot inject: %s\n", err);
+	fprintf(stderr, "cannot inject: %s\n", cbpfc_errmsg());
 	return 1;
 }
 

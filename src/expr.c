@@ -11,6 +11,7 @@
 #include <pcap.h>
 
 #include "cbpfc.h"
+#include "internal.h"
 
 struct cbpfc_expr {
 	struct cbpfc_insn *insns;
@@ -20,34 +21,35 @@ struct cbpfc_expr {
 /**
  * cbpfc_expr_new:
  * @expr: a tcpdump-style filter expression
- * @err: buffer for the error message, or NULL
- * @errsz: size of @err
  *
  * Compiles @expr with libpcap. The resulting cBPF program is what
  * cbpfc_to_c(), cbpfc_to_ebpf() and cbpfc_inject() take.
  *
- * Returns: a new expression, or NULL on failure with @err filled
+ * Returns: a new expression, or NULL on failure - see cbpfc_errmsg()
  */
-struct cbpfc_expr *cbpfc_expr_new(const char *expr, char *err, size_t errsz)
+struct cbpfc_expr *cbpfc_expr_new(const char *expr)
 {
-	struct cbpfc_expr *e = calloc(1, sizeof(*e));
+	struct cbpfc_expr *e;
 	struct bpf_program fp;          /* libpcap's copy, alive for one compile */
 	pcap_t *dead;
 
-	if (!e)
+	cbpfc_err_clear();
+
+	e = calloc(1, sizeof(*e));
+	if (!e) {
+		cbpfc_err_set("out of memory");
 		return NULL;
+	}
 
 	dead = pcap_open_dead(DLT_EN10MB, 262144);
 	if (!dead) {
+		cbpfc_err_set("pcap_open_dead failed");
 		free(e);
-		if (err)
-			snprintf(err, errsz, "pcap_open_dead failed");
 		return NULL;
 	}
 
 	if (pcap_compile(dead, &fp, expr, 1, PCAP_NETMASK_UNKNOWN) < 0) {
-		if (err)
-			snprintf(err, errsz, "%s", pcap_geterr(dead));
+		cbpfc_err_set("%s", pcap_geterr(dead));
 		pcap_close(dead);
 		free(e);
 		return NULL;
@@ -59,6 +61,7 @@ struct cbpfc_expr *cbpfc_expr_new(const char *expr, char *err, size_t errsz)
 	e->n = fp.bf_len;
 	e->insns = calloc(e->n ? e->n : 1, sizeof(*e->insns));
 	if (!e->insns) {
+		cbpfc_err_set("out of memory");
 		pcap_freecode(&fp);
 		free(e);
 		return NULL;

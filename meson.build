@@ -24,6 +24,7 @@ add_project_arguments('-D_GNU_SOURCE', language : 'c')
 inc = include_directories('include')
 
 cbpfc_sources = files(
+  'src/err.c',
   'src/expr.c',
   'src/to_c.c',
   'src/to_ebpf.c',

@@ -80,13 +80,12 @@ static int run_one(const char *path, const struct cbpfc_insn *prog, size_t n,
 {
 	struct bpf_object  *obj;
 	struct bpf_program *p;
-	char        err[256] = "";
 	uint8_t     pkt[PKT_MAX];
 	int         fd, bad = 0, i;
 
-	obj = cbpfc_inject(path, "filter_pcap", prog, n, err, sizeof(err));
+	obj = cbpfc_inject(path, "filter_pcap", prog, n);
 	if (!obj) {
-		fprintf(stderr, "  FAIL %s: %s\n", label, err);
+		fprintf(stderr, "  FAIL %s: %s\n", label, cbpfc_errmsg());
 		failures++;
 		return -1;
 	}
@@ -318,14 +317,14 @@ int main(int argc, char **argv)
 
 	printf("== filter expressions ==\n");
 	for (i = 0; i < cbpf_test_expr_count; i++) {
-		char               err[256] = "";
 		struct cbpfc_expr *e;
 		size_t             n;
 		const struct cbpfc_insn *insns;
 
-		e = cbpfc_expr_new(cbpf_test_exprs[i], err, sizeof(err));
+		e = cbpfc_expr_new(cbpf_test_exprs[i]);
 		if (!e) {
-			fprintf(stderr, "  SKIP \"%s\": %s\n", cbpf_test_exprs[i], err);
+			fprintf(stderr, "  SKIP \"%s\": %s\n", cbpf_test_exprs[i],
+				cbpfc_errmsg());
 			continue;
 		}
 		insns = cbpfc_expr_insns(e, &n);

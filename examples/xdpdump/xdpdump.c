@@ -125,7 +125,6 @@ int main(int argc, char **argv)
 	int   timeout = 0, drv_mode = 0, verbose = 0, no_promisc = 0;
 	int   ifindex, prog_fd = -1, events_fd = -1, promisc_fd = -1, link_fd = -1;
 	__u32 xdp_flags;
-	char  err[256] = "";
 	struct cbpfc_expr *e = NULL;
 	struct bpf_object *obj = NULL;
 	struct bpf_program *prog;
@@ -185,9 +184,9 @@ int main(int argc, char **argv)
 	}
 
 	/* 1. filter expression -> cBPF */
-	e = cbpfc_expr_new(expr, err, sizeof(err));
+	e = cbpfc_expr_new(expr);
 	if (!e) {
-		fprintf(stderr, "bad filter expression: %s\n", err);
+		fprintf(stderr, "bad filter expression: %s\n", cbpfc_errmsg());
 		return 1;
 	}
 
@@ -196,9 +195,9 @@ int main(int argc, char **argv)
 		size_t n;
 		const struct cbpfc_insn *insns = cbpfc_expr_insns(e, &n);
 
-		obj = cbpfc_inject(objpath, "filter_pcap", insns, n, err, sizeof(err));
+		obj = cbpfc_inject(objpath, "filter_pcap", insns, n);
 		if (!obj) {
-			fprintf(stderr, "cannot inject the filter: %s\n", err);
+			fprintf(stderr, "cannot inject the filter: %s\n", cbpfc_errmsg());
 			goto out;
 		}
 	}
@@ -246,9 +245,9 @@ int main(int argc, char **argv)
 		goto out_obj;
 	}
 
-	out = pcap_writer_open(outfile, err, sizeof(err));
+	out = pcap_writer_open(outfile);
 	if (!out) {
-		fprintf(stderr, "%s\n", err);
+		fprintf(stderr, "%s\n", pcap_writer_errmsg());
 		goto out_detach;
 	}
 

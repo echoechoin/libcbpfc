@@ -80,15 +80,15 @@ int main(void)
 
 	printf("== filter expressions ==\n");
 	for (i = 0; i < cbpf_test_expr_count; i++) {
-		char               err[256] = "";
 		struct cbpfc_expr *e;
 		struct built       b = { NULL, NULL, "" };
 		size_t             n;
 		const struct cbpfc_insn *insns;
 
-		e = cbpfc_expr_new(cbpf_test_exprs[i], err, sizeof(err));
+		e = cbpfc_expr_new(cbpf_test_exprs[i]);
 		if (!e) {
-			fprintf(stderr, "  SKIP \"%s\": %s\n", cbpf_test_exprs[i], err);
+			fprintf(stderr, "  SKIP \"%s\": %s\n", cbpf_test_exprs[i],
+				cbpfc_errmsg());
 			continue;
 		}
 		insns = cbpfc_expr_insns(e, &n);

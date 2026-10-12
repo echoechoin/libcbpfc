@@ -5,6 +5,7 @@
  * <pcap.h> does not meet <linux/bpf.h> in the rest of the tool.
  */
 #include <pcap.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/time.h>
@@ -15,17 +16,36 @@ struct pcap_writer {
 	pcap_dumper_t *dump;
 };
 
-struct pcap_writer *pcap_writer_open(const char *path, char *err, size_t errsz)
+/* Same shape as the library's error reporting: a fixed per-thread message
+ * behind an accessor, so the caller keeps no buffer. */
+static _Thread_local char last[256];
+
+static void report(const char *fmt, ...)
 {
-	struct pcap_writer *w = calloc(1, sizeof(*w));
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(last, sizeof(last), fmt, ap);
+	va_end(ap);
+}
+
+struct pcap_writer *pcap_writer_open(const char *path)
+{
+	struct pcap_writer *w;
 	pcap_t *dead;
 
-	if (!w)
+	last[0] = '\0';
+
+	w = calloc(1, sizeof(*w));
+	if (!w) {
+		report("out of memory");
 		return NULL;
+	}
 
 	/* A "dead" handle just describes the link type; no capture happens. */
 	dead = pcap_open_dead(DLT_EN10MB, 65535);
 	if (!dead) {
+		report("pcap_open_dead failed");
 		free(w);
 		return NULL;
 	}
@@ -33,12 +53,16 @@ struct pcap_writer *pcap_writer_open(const char *path, char *err, size_t errsz)
 	w->dump = pcap_dump_open(dead, path);
 	pcap_close(dead);
 	if (!w->dump) {
-		if (err)
-			snprintf(err, errsz, "cannot open %s", path);
+		report("cannot open %s", path);
 		free(w);
 		return NULL;
 	}
 	return w;
+}
+
+const char *pcap_writer_errmsg(void)
+{
+	return last;
 }
 
 void pcap_writer_write(struct pcap_writer *w, const uint8_t *data,

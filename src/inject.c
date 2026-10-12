@@ -52,6 +52,7 @@
 #include <bpf/libbpf.h>
 
 #include "cbpfc.h"
+#include "internal.h"
 
 #define INSN_SZ 8
 
@@ -173,7 +174,7 @@ static int find_symtab(Elf *e, Elf_Scn **scn_out, GElf_Shdr *sh_out)
 /* Symbols. The placeholder keeps its offset - it now begins with the fragment -
  * and grows; everything that starts after it moves. */
 static int move_symbols(uint8_t *buf, const struct found *f, const char *name,
-			size_t plain, char *err, size_t errsz)
+			size_t plain)
 {
 	size_t i;
 
@@ -192,15 +193,11 @@ static int move_symbols(uint8_t *buf, const struct found *f, const char *name,
 			continue;               /* other sections, section and file symbols */
 
 		if (sym.st_value == f->off) {
-			if (err)
-				snprintf(err, errsz, "%s has another symbol at the same"
-						     " address", name);
+			cbpfc_err_set("%s has another symbol at the same address", name);
 			return -1;
 		}
 		if (sym.st_value < f->off && sym.st_value + sym.st_size > f->off) {
-			if (err)
-				snprintf(err, errsz, "a symbol in the section of %s"
-						     " overlaps it", name);
+			cbpfc_err_set("a symbol in the section of %s overlaps it", name);
 			return -1;
 		}
 		if (sym.st_value > f->off) {
@@ -462,8 +459,6 @@ static int write_all(int fd, const void *buf, size_t len)
  * @func_name: the placeholder function in it, e.g. "filter_pcap"
  * @prog: the cBPF program
  * @n: number of instructions in @prog
- * @err: buffer for the error message, or NULL
- * @errsz: size of @err
  *
  * Puts @prog in front of the body of @func_name and loads the result with
  * libbpf.
@@ -500,11 +495,10 @@ static int write_all(int fd, const void *buf, size_t len)
  * A failed load prints the verifier log to stderr; call libbpf_set_print()
  * first to capture it instead.
  *
- * Returns: the loaded object, or NULL with @err filled
+ * Returns: the loaded object, or NULL - see cbpfc_errmsg()
  */
 struct bpf_object *cbpfc_inject(const char *path, const char *func_name,
-				const struct cbpfc_insn *prog, size_t n,
-				char *err, size_t errsz)
+				const struct cbpfc_insn *prog, size_t n)
 {
 	struct cbpfc_ebpf_prog frag;
 	struct found   f;
@@ -520,8 +514,9 @@ struct bpf_object *cbpfc_inject(const char *path, const char *func_name,
 	size_t         size = 0, plain, new_text, new_off, new_size;
 	int            mfd = -1, rc = -1;
 
-#define FAIL(...) do { if (err) snprintf(err, errsz, __VA_ARGS__); goto out; } while (0)
+#define FAIL(...) do { cbpfc_err_set(__VA_ARGS__); goto out; } while (0)
 
+	cbpfc_err_clear();
 	memset(&frag, 0, sizeof(frag));
 
 	if (cbpfc_to_ebpf(prog, n, &frag) != 0)
@@ -588,7 +583,7 @@ struct bpf_object *cbpfc_inject(const char *path, const char *func_name,
 	newsh.sh_size   = new_text;
 	patch(newbuf + eh.e_shoff + f.sec_idx * eh.e_shentsize, &newsh, sizeof(newsh));
 
-	if (move_symbols(newbuf, &f, func_name, plain, err, errsz) != 0)
+	if (move_symbols(newbuf, &f, func_name, plain) != 0)
 		goto out;
 	move_relocations(elf, newbuf, &f, plain);
 	move_calls(elf, newbuf, &f, plain);

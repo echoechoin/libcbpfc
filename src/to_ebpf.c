@@ -30,6 +30,7 @@
 #include <linux/bpf.h>
 
 #include "cbpfc.h"
+#include "internal.h"
 
 /* cBPF-only classes: in eBPF 0x06 is BPF_JMP32 and 0x07 is BPF_ALU64. */
 #define CBPF_RET  0x06
@@ -639,7 +640,7 @@ static int falls_off_end(const struct cbpfc_insn *p, size_t n, const char *reach
  * that mapping belongs, and its placeholder body is where it happens.
  *
  * Returns: 0 on success, -1 if @p is empty or holds an instruction this
- * compiler does not handle
+ * compiler does not handle - see cbpfc_errmsg()
  */
 int cbpfc_to_ebpf(const struct cbpfc_insn *p, size_t n,
 		  struct cbpfc_ebpf_prog *out)
@@ -658,12 +659,18 @@ int cbpfc_to_ebpf(const struct cbpfc_insn *p, size_t n,
 	out->insn = NULL;
 	out->n    = 0;
 
-	if (n == 0)
+	cbpfc_err_clear();
+
+	if (n == 0) {
+		cbpfc_err_set("no instructions to compile");
 		return -1;
+	}
 
 	t.label = malloc(t.n_labels * sizeof(*t.label));
-	if (!t.label)
+	if (!t.label) {
+		cbpfc_err_set("out of memory");
 		return -1;
+	}
 	for (i = 0; i < t.n_labels; i++)
 		t.label[i] = (size_t)-1;
 
@@ -673,8 +680,10 @@ int cbpfc_to_ebpf(const struct cbpfc_insn *p, size_t n,
 		char *reach = malloc(n);
 		int   off_end;
 
-		if (!reach)
+		if (!reach) {
+			cbpfc_err_set("out of memory");
 			goto out;
+		}
 		mark_reachable(p, n, reach);
 		off_end = falls_off_end(p, n, reach);
 
@@ -683,6 +692,8 @@ int cbpfc_to_ebpf(const struct cbpfc_insn *p, size_t n,
 				continue;
 			t.label[i] = t.n;
 			if (emit_one(&t, &p[i], i, n) != 0) {
+				cbpfc_err_set("instruction %zu (code 0x%02x) is not"
+					      " supported", i, p[i].code);
 				free(reach);
 				goto out;
 			}
@@ -707,8 +718,10 @@ int cbpfc_to_ebpf(const struct cbpfc_insn *p, size_t n,
 		emit_frag_epilogue(&t);
 	}
 
-	if (t.err)
+	if (t.err) {
+		cbpfc_err_set("out of memory");
 		goto out;
+	}
 
 	/* Second pass: every label is known now, so resolve the jumps. */
 	for (i = 0; i < t.nfix; i++) {
@@ -716,11 +729,16 @@ int cbpfc_to_ebpf(const struct cbpfc_insn *p, size_t n,
 		size_t lb = t.fix[i].label;
 		long   d;
 
-		if (lb >= t.n_labels || t.label[lb] == (size_t)-1)
+		if (lb >= t.n_labels || t.label[lb] == (size_t)-1) {
+			cbpfc_err_set("a jump points at an instruction that is not"
+				      " reachable");
 			goto out;
+		}
 		d = (long)t.label[lb] - (long)at - 1;
-		if (d < -32768 || d > 32767)
-			goto out;               /* offset does not fit in 16 bits */
+		if (d < -32768 || d > 32767) {
+			cbpfc_err_set("a jump is too far for a 16-bit offset");
+			goto out;
+		}
 		t.insn[at].off = (int16_t)d;
 	}
 

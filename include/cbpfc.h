@@ -73,7 +73,7 @@ void cbpfc_ebpf_prog_free(struct cbpfc_ebpf_prog *p);
 
 void cbpfc_disasm(char *buf, size_t bufsz, const struct cbpfc_ebpf_insn *in);
 
-struct cbpfc_expr *cbpfc_expr_new(const char *expr, char *err, size_t errsz);
+struct cbpfc_expr *cbpfc_expr_new(const char *expr);
 
 const struct cbpfc_insn *cbpfc_expr_insns(const struct cbpfc_expr *e, size_t *n);
 
@@ -83,8 +83,9 @@ uint32_t cbpfc_expr_bpf_filter(const struct cbpfc_expr *e,
 void cbpfc_expr_free(struct cbpfc_expr *e);
 
 struct bpf_object *cbpfc_inject(const char *path, const char *func_name,
-				const struct cbpfc_insn *prog, size_t n,
-				char *err, size_t errsz);
+				const struct cbpfc_insn *prog, size_t n);
+
+const char *cbpfc_errmsg(void);
 
 #ifdef __cplusplus
 }
