@@ -196,12 +196,16 @@ static int translate(FILE *out, const struct cbpfc_insn *p, size_t n, int for_eb
 	int   rc = 0, need16, need32;
 	size_t pc;
 
-	if (n == 0)
+	if (n == 0) {
+		cbpfc_err_set("no instructions to compile");
 		return -1;
+	}
 
 	need = calloc(n, 1);
-	if (!need)
+	if (!need) {
+		cbpfc_err_set("out of memory");
 		return -1;
+	}
 	mark_targets(p, n, need);
 	scan_widths(p, n, &need16, &need32);
 
@@ -230,6 +234,8 @@ static int translate(FILE *out, const struct cbpfc_insn *p, size_t n, int for_eb
 		case BPF_LD  | BPF_W | BPF_MEM:
 		case BPF_LDX | BPF_W | BPF_MEM:
 			if (i->k >= 16) {
+				cbpfc_err_set("instruction %zu reads M[%u] -"
+					      " cBPF has 16 scratch slots", pc, i->k);
 				rc = -1;
 				break;
 			}
@@ -238,11 +244,21 @@ static int translate(FILE *out, const struct cbpfc_insn *p, size_t n, int for_eb
 			break;
 
 		case BPF_ST:
-			if (i->k >= 16) { rc = -1; break; }
+			if (i->k >= 16) {
+				cbpfc_err_set("instruction %zu writes M[%u] -"
+					      " cBPF has 16 scratch slots", pc, i->k);
+				rc = -1;
+				break;
+			}
 			fprintf(out, "    m[%u] = a;\n", i->k);
 			break;
 		case BPF_STX:
-			if (i->k >= 16) { rc = -1; break; }
+			if (i->k >= 16) {
+				cbpfc_err_set("instruction %zu writes M[%u] -"
+					      " cBPF has 16 scratch slots", pc, i->k);
+				rc = -1;
+				break;
+			}
 			fprintf(out, "    m[%u] = x;\n", i->k);
 			break;
 
@@ -337,6 +353,8 @@ static int translate(FILE *out, const struct cbpfc_insn *p, size_t n, int for_eb
 		case BPF_MISC | BPF_TXA: fputs("    a = x;\n", out); break;
 
 		default:
+			cbpfc_err_set("instruction %zu (code 0x%02x) is not"
+				      " supported", pc, i->code);
 			rc = -1;
 			break;
 		}
@@ -383,9 +401,10 @@ static int translate(FILE *out, const struct cbpfc_insn *p, size_t n, int for_eb
  * it does.
  *
  * Returns: 0 on success, -1 if @prog holds an instruction this compiler does
- * not handle
+ * not handle - see cbpfc_errmsg()
  */
 int cbpfc_to_c(FILE *out, const struct cbpfc_insn *prog, size_t n, int for_ebpf)
 {
+	cbpfc_err_clear();
 	return translate(out, prog, n, for_ebpf);
 }
