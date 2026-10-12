@@ -579,17 +579,23 @@ static int emit_one(struct tl *t, const struct cbpfc_insn *in, size_t pc, size_t
 /* Mark every instruction reachable from pc 0.
  *
  * A C compiler would drop dead code silently, but the eBPF verifier rejects
- * any unreachable instruction, so the dead ones have to be skipped here. */
-static void mark_reachable(const struct cbpfc_insn *p, size_t n, char *reach)
+ * any unreachable instruction, so the dead ones have to be skipped here.
+ *
+ * Returns -1 if the work list cannot be allocated. The caller has to fail then:
+ * carrying on with nothing marked would emit a fragment with no filter code in
+ * it at all, and report success. */
+static int mark_reachable(const struct cbpfc_insn *p, size_t n, char *reach)
 {
-	size_t *stack = malloc(n * sizeof(*stack));
+	size_t *stack;
 	size_t  sp = 0;
 
 	memset(reach, 0, n);
-	if (!stack || n == 0) {
-		free(stack);
-		return;
-	}
+	if (n == 0)
+		return 0;
+
+	stack = malloc(n * sizeof(*stack));
+	if (!stack)
+		return -1;
 
 	reach[0] = 1;
 	stack[sp++] = 0;
@@ -624,6 +630,7 @@ static void mark_reachable(const struct cbpfc_insn *p, size_t n, char *reach)
 		}
 	}
 	free(stack);
+	return 0;
 }
 
 /* Does control fall off the end of the program? If so the trailing block is
@@ -718,7 +725,11 @@ int cbpfc_to_ebpf(const struct cbpfc_insn *p, size_t n,
 			cbpfc_err_set("out of memory");
 			goto out;
 		}
-		mark_reachable(p, n, reach);
+		if (mark_reachable(p, n, reach) != 0) {
+			cbpfc_err_set("out of memory");
+			free(reach);
+			goto out;
+		}
 		off_end = falls_off_end(p, n, reach);
 
 		for (i = 0; i < n; i++) {
