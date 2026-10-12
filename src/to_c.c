@@ -313,7 +313,11 @@ static int translate(FILE *out, const struct cbpfc_insn *p, size_t n, int for_eb
 		case BPF_ALU | BPF_MOD | BPF_X:
 			fputs("    if (x == 0) return 0;  /* modulo zero */\n    a %= x;\n", out);
 			break;
-		/* `mod #0` leaves A unchanged (libpcap semantics). */
+		/* No implementation defines `mod #0`: the kernel refuses such a program
+		 * (sk_chk_filter() rejects k == 0) and libpcap never compiles one, so
+		 * it can only come from a hand-written program. Leaving A alone is what
+		 * libpcap's interpreter does with it, which is what the tests compare
+		 * against. */
 		case BPF_ALU | BPF_MOD | BPF_K:
 			if (i->k == 0)
 				fputs("    /* mod #0: a unchanged */\n", out);
@@ -321,8 +325,9 @@ static int translate(FILE *out, const struct cbpfc_insn *p, size_t n, int for_eb
 				fprintf(out, "    a %%= %uu;\n", i->k);
 			break;
 
-		/* Shifts: the immediate form masks to 5 bits, the register form
-		 * yields 0 for amounts >= 32. Both follow libpcap's bpf_filter. */
+		/* Shifts. The immediate form masks the amount to 5 bits, the register
+		 * form yields 0 for amounts >= 32. An amount >= 32 is as undefined as
+		 * `mod #0` above; the masking is libpcap's interpreter again. */
 		case BPF_ALU | BPF_LSH | BPF_K: fprintf(out, "    a <<= %uu;\n", i->k & 31); break;
 		case BPF_ALU | BPF_RSH | BPF_K: fprintf(out, "    a >>= %uu;\n", i->k & 31); break;
 		case BPF_ALU | BPF_LSH | BPF_X: fputs("    a = (x < 32) ? (a << x) : 0;\n", out); break;

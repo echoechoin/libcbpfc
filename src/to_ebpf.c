@@ -512,14 +512,18 @@ static int emit_one(struct tl *t, const struct cbpfc_insn *in, size_t pc, size_t
 		e_bail_if(t, BPF_JMP | BPF_JEQ | BPF_K, R_X, 0, 0);
 		e_alu(t, BPF_MOD, 1, 0);
 		break;
-	/* `mod #0` leaves A unchanged (libpcap's behaviour), so it is a no-op. */
+	/* `mod #0` is not defined by any implementation: the kernel refuses such a
+	 * program (sk_chk_filter() rejects k == 0) and libpcap never compiles one,
+	 * so it can only come from a hand-written program. A no-op is what libpcap's
+	 * interpreter does with it, which is what the tests compare against. */
 	case BPF_ALU | BPF_MOD | BPF_K:
 		if (in->k != 0)
 			e_alu(t, BPF_MOD, 0, (int32_t)in->k);
 		break;
 
 	/* Shifts. The immediate form masks the amount to 5 bits, the register
-	 * form yields 0 for amounts >= 32; both match libpcap's bpf_filter. */
+	 * form yields 0 for amounts >= 32. An amount >= 32 is as undefined as
+	 * `mod #0` above; the masking is libpcap's interpreter again. */
 	case BPF_ALU | BPF_LSH | BPF_K:
 		e_alu(t, BPF_LSH, 0, (int32_t)(in->k & 31));
 		break;
