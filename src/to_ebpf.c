@@ -172,15 +172,6 @@ static uint8_t size_cls(int size)
 	return (uint8_t)(size == 4 ? BPF_W : size == 2 ? BPF_H : BPF_B);
 }
 
-static int width_bytes(uint16_t code)
-{
-	switch (code & 0x18) {
-	case BPF_W: return 4;
-	case BPF_H: return 2;
-	default:    return 1;
-	}
-}
-
 /* Does this instruction compile into nothing but "no match"? Four things do:
  *
  *   - an absolute packet load at a constant offset past the verifier's 16-bit

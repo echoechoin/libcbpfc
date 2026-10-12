@@ -23,16 +23,6 @@
 #include "cbpfc.h"
 #include "internal.h"
 
-
-static uint32_t width_of(uint16_t code)
-{
-	switch (code & 0x18) {
-	case BPF_W: return 4;
-	case BPF_H: return 2;
-	default:    return 1;
-	}
-}
-
 /* Emit a jump target. A target at or past n means control leaves the program,
  * which per cBPF semantics is a non-match. */
 static void emit_target(FILE *o, size_t target, size_t n, const char *ind)
@@ -49,7 +39,7 @@ static void emit_target(FILE *o, size_t target, size_t n, const char *ind)
  * too. An indirect offset (x + k) needs x to be bounded as well. */
 static void emit_load(FILE *o, uint16_t code, uint32_t k, int indirect)
 {
-	uint32_t size = width_of(code);
+	uint32_t size = (uint32_t)width_bytes(code);
 
 	if (indirect) {
 		uint64_t end = (uint64_t)k + size;
