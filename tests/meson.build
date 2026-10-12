@@ -50,7 +50,7 @@ foreach name, src : test_sources
       continue
     endif
     args += skeleton_o
-    deps += libbpf
+    deps += [libbpf, libelf]   # libelf: check_layout() reads the host object
   endif
 
   exe = executable('test_' + name, src,

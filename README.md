@@ -129,20 +129,6 @@ Growing the section that holds the placeholder therefore only means updating
 that section's `sh_offset`/`sh_size` and the placeholder's `st_size` - and the
 rebuilt section is appended at the end of the file, so nothing else moves.
 
-## Tests
-
-| test | compares |
-|---|---|
-| `test_to_c` | the generated C (built into a `.so` and `dlopen`ed) vs libpcap |
-| `test_ebpf` | the kernel running the injected eBPF via `BPF_PROG_TEST_RUN` vs libpcap |
-
-Both run the same corpus of 200 packets per filter over 26 expressions.
-`test_ebpf` additionally fuzzes 400 randomly generated cBPF programs, which
-reaches instruction combinations no real expression produces.
-
-`test_to_c` needs no privileges; `test_ebpf` needs root to load BPF programs
-and exits 77 (meson reports "skipped") otherwise.
-
 ## Limitations
 
 - The library emits a fragment; the program type is whatever the host object's
@@ -150,6 +136,6 @@ and exits 77 (meson reports "skipped") otherwise.
   host program.
 - `ld len` maps to `data_end - data` (the captured length), not libpcap's wire
   length. The two differ only for truncated captures.
-- The placeholder must be the last symbol in its section, since the section is
-  rebuilt by appending to it. A host that puts something after it is rejected
-  with a clear error rather than quietly corrupted.
+- The placeholder must live in `.text`; that is the only section libbpf treats
+  as a home for subprograms, and a function anywhere else is rejected as a
+  static program.

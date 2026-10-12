@@ -16,11 +16,18 @@
  * The host maps a match to TC_ACT_OK (0) and a non-match to TC_ACT_SHOT (2),
  * so the expected verdict is derived from the cBPF return value.
  *
+ * The host keeps helper functions in .text on both sides of the placeholder,
+ * which is what makes the run cover the records cbpfc_inject() has to move when
+ * the placeholder grows. check_layout() asserts that up front: a compiler
+ * change that laid them out differently would leave the test passing while
+ * quietly covering less.
+ *
  * Needs root: loading a BPF program requires CAP_BPF. The path to skeleton.o
  * is passed as the first argument. Without root the test exits 77, which meson
  * reports as skipped.
  */
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +35,8 @@
 
 #include <bpf/bpf.h>       /* bpf_test_run_opts */
 #include <bpf/libbpf.h>
+#include <gelf.h>
+#include <libelf.h>
 
 #include "cbpfc.h"
 #include "common.h"
@@ -112,6 +121,96 @@ static int run_one(const char *path, const struct cbpfc_insn *prog, size_t n,
 
 	bpf_object__close(obj);
 	return bad;
+}
+
+/* The placeholder has to sit in .text with a function on each side of it:
+ * before_helper is the code that must not move, after_helper the code that
+ * must. Returns 0 if the layout is right, -1 with a message otherwise. */
+static int check_layout(const char *path)
+{
+	Elf        *elf;
+	Elf_Scn    *scn = NULL, *symscn = NULL;
+	GElf_Ehdr   eh;
+	GElf_Shdr   symsh, secsh;
+	Elf_Data   *symdata;
+	const char *secname = "?";
+	size_t      sec_idx = 0, off = 0, size = 0, n = 0, i;
+	int         before = 0, after = 0, fd, ok = -1;
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return -1;
+	elf_version(EV_CURRENT);
+	elf = elf_begin(fd, ELF_C_READ, NULL);
+	if (!elf) {
+		close(fd);
+		return -1;
+	}
+
+	if (!gelf_getehdr(elf, &eh))
+		goto out;
+	while ((scn = elf_nextscn(elf, scn))) {
+		GElf_Shdr s;
+
+		if (gelf_getshdr(scn, &s) && s.sh_type == SHT_SYMTAB) {
+			symscn = scn;
+			symsh  = s;
+			break;
+		}
+	}
+	if (!symscn || !(symdata = elf_getdata(symscn, NULL)) || !symsh.sh_entsize)
+		goto out;
+
+	n = symsh.sh_size / symsh.sh_entsize;
+	for (i = 0; i < n; i++) {
+		GElf_Sym    sym;
+		const char *nm;
+
+		if (!gelf_getsym(symdata, (int)i, &sym))
+			continue;
+		nm = elf_strptr(elf, symsh.sh_link, sym.st_name);
+		if (nm && strcmp(nm, "filter_pcap") == 0) {
+			sec_idx = sym.st_shndx;
+			off     = (size_t)sym.st_value;
+			size    = (size_t)sym.st_size;
+			break;
+		}
+	}
+	scn = elf_getscn(elf, sec_idx);
+	if (sec_idx && scn && gelf_getshdr(scn, &secsh)) {
+		const char *nm = elf_strptr(elf, eh.e_shstrndx, secsh.sh_name);
+
+		if (nm)
+			secname = nm;
+	}
+
+	for (i = 0; i < n; i++) {
+		GElf_Sym sym;
+
+		if (!gelf_getsym(symdata, (int)i, &sym))
+			continue;
+		if (sym.st_shndx != sec_idx || sym.st_size == 0 ||
+		    GELF_ST_TYPE(sym.st_info) != STT_FUNC)
+			continue;
+		if ((size_t)sym.st_value + sym.st_size <= off)
+			before++;
+		else if ((size_t)sym.st_value >= off + size)
+			after++;
+	}
+
+	if (size && strcmp(secname, ".text") == 0 && before > 0 && after > 0)
+		ok = 0;
+	else
+		fprintf(stderr,
+			"test_ebpf: %s no longer has the layout this test needs:\n"
+			"  filter_pcap in %s at offset %zu size %zu"
+			" (%d functions before, %d after)\n"
+			"  expected it in .text with one on each side\n",
+			path, secname, off, size, before, after);
+out:
+	elf_end(elf);
+	close(fd);
+	return ok;
 }
 
 /* Random cBPF programs */
@@ -213,6 +312,9 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	path = argv[1];
+
+	if (check_layout(path) != 0)
+		return 1;
 
 	printf("== filter expressions ==\n");
 	for (i = 0; i < cbpf_test_expr_count; i++) {
