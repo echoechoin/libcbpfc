@@ -25,12 +25,18 @@
  *   2. that rebuilt section is appended at the end of the file and its section
  *      header is pointed at it.
  *
- * Nothing else has to move. In a relocatable ELF every value except sh_offset
- * and e_shoff is section-relative - st_value and r_offset are offsets within
- * their section - so growing a section only changes that section's
- * sh_offset/sh_size and the placeholder's st_size. The flip side is that the
- * placeholder must be the last thing in its section; anything after it would
- * shift, and that is rejected rather than silently corrupted.
+ * Nothing in the section table has to move. In a relocatable ELF every value
+ * except sh_offset and e_shoff is section-relative - st_value and r_offset are
+ * offsets within their section - so the rebuilt section needs only a new
+ * sh_offset, a new sh_size and a new st_size for the placeholder.
+ *
+ * Inside the section, on the other hand, everything after the placeholder
+ * shifts by the size of the fragment, so the records that name that code have
+ * to move with it: the symbols, the relocations of the section, the call
+ * addends (which live in whichever section does the calling, not in this one)
+ * and the .BTF.ext func_info and line_info entries. Those are the five move_*()
+ * helpers below, and they are why the host is free to keep other functions in
+ * the placeholder's section.
  *
  * Everything past that is libbpf's job: it flattens the section into the
  * program, resolves the call to the placeholder, creates the maps the host
