@@ -438,7 +438,18 @@ static int emit_one(struct tl *t, const struct cbpfc_insn *in, size_t pc, size_t
 			break;
 		}
 		e_bound(t, (int32_t)(in->k + 1));
-		e_ins(t, BPF_LDX | BPF_MEM | BPF_B, R_T0, R_DATA, (int16_t)in->k, 0);
+		/* A constant offset fits the instruction's 16-bit `off` field only up
+		 * to 32767; beyond that it has to go on a copy of the pointer, the
+		 * same way e_load_abs() does it. Truncating it instead would load from
+		 * a negative offset - which contradicts the bound just proved and the
+		 * verifier rejects. */
+		if (in->k <= 32767) {
+			e_ins(t, BPF_LDX | BPF_MEM | BPF_B, R_T0, R_DATA, (int16_t)in->k, 0);
+		} else {
+			e_mov64(t, R_T0, R_DATA);
+			e_add64i(t, R_T0, (int32_t)in->k);
+			e_ins(t, BPF_LDX | BPF_MEM | BPF_B, R_T0, R_T0, 0, 0);
+		}
 		e_ins(t, BPF_ALU | BPF_AND | BPF_K, R_T0, 0, 0, 0x0f);
 		e_ins(t, BPF_ALU | BPF_LSH | BPF_K, R_T0, 0, 0, 2);
 		e_mov32(t, R_X, R_T0);
