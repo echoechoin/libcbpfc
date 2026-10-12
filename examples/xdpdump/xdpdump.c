@@ -17,13 +17,17 @@
 #define _GNU_SOURCE
 #endif
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <getopt.h>
+#include <net/ethernet.h>          /* ETH_P_ALL */
 #include <net/if.h>
+#include <netpacket/packet.h>      /* struct packet_mreq, PACKET_MR_PROMISC */
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -75,6 +79,23 @@ static int on_event(void *user, void *data, size_t len)
 	return 0;
 }
 
+static int promiscuous_on(int ifindex)
+{
+	struct packet_mreq mr = {
+		.mr_ifindex = ifindex,
+		.mr_type    = PACKET_MR_PROMISC,
+	};
+	int fd = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC, htons(ETH_P_ALL));
+
+	if (fd < 0)
+		return -1;
+	if (setsockopt(fd, SOL_PACKET, PACKET_ADD_MEMBERSHIP, &mr, sizeof(mr)) < 0) {
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
+
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
@@ -86,6 +107,7 @@ static void usage(const char *argv0)
 		"  -o, --object <file>    compiled XDP host object\n"
 		"                         (default: %s)\n"
 		"  -D, --drv              attach in native XDP mode instead of generic\n"
+		"  -p, --no-promisc       do not put the interface into promiscuous mode\n"
 		"  -t, --timeout <sec>    give up after this long (default: no limit)\n"
 		"  -v, --verbose          print one line per captured packet\n"
 		"\n"
@@ -100,8 +122,8 @@ int main(int argc, char **argv)
 	const char *objpath = XDPDUMP_DEFAULT_OBJ;
 	const char *expr = NULL;
 	unsigned long limit = 0;
-	int   timeout = 0, drv_mode = 0, verbose = 0;
-	int   ifindex, prog_fd = -1, events_fd = -1;
+	int   timeout = 0, drv_mode = 0, verbose = 0, no_promisc = 0;
+	int   ifindex, prog_fd = -1, events_fd = -1, promisc_fd = -1, link_fd = -1;
 	__u32 xdp_flags;
 	char  err[256] = "";
 	struct cbpfc_expr *e = NULL;
@@ -122,19 +144,21 @@ int main(int argc, char **argv)
 		{ "write",   required_argument, NULL, 'w' },
 		{ "object",  required_argument, NULL, 'o' },
 		{ "drv",     no_argument,       NULL, 'D' },
+		{ "no-promisc", no_argument,    NULL, 'p' },
 		{ "timeout", required_argument, NULL, 't' },
 		{ "verbose", no_argument,       NULL, 'v' },
 		{ "help",    no_argument,       NULL, 'h' },
 		{ NULL, 0, NULL, 0 },
 	};
 
-	while ((opt = getopt_long(argc, argv, "i:n:w:o:Dt:vh", long_opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "i:n:w:o:Dpt:vh", long_opts, NULL)) != -1) {
 		switch (opt) {
 		case 'i': iface   = optarg; break;
 		case 'n': limit   = strtoul(optarg, NULL, 10); break;
 		case 'w': outfile = optarg; break;
 		case 'o': objpath = optarg; break;
 		case 'D': drv_mode = 1; break;
+		case 'p': no_promisc = 1; break;
 		case 't': timeout = atoi(optarg); break;
 		case 'v': verbose = 1; break;
 		case 'h': usage(argv[0]); return 0;
@@ -197,10 +221,28 @@ int main(int argc, char **argv)
 		events_fd = bpf_map__fd(m);
 	}
 
-	/* 4. attach */
+	/* 4. promiscuous mode, then attach */
+	if (!no_promisc) {
+		promisc_fd = promiscuous_on(ifindex);
+		if (promisc_fd < 0)
+			fprintf(stderr, "warning: %s is not in promiscuous mode: %s\n",
+				iface, strerror(errno));
+	}
+
 	xdp_flags = drv_mode ? XDP_FLAGS_DRV_MODE : XDP_FLAGS_SKB_MODE;
-	if (bpf_xdp_attach(ifindex, prog_fd, xdp_flags, NULL) != 0) {
+	{
+		struct bpf_link_create_opts lc = {
+			.sz    = sizeof(lc),
+			.flags = xdp_flags,
+		};
+
+		link_fd = bpf_link_create(prog_fd, ifindex, BPF_XDP, &lc);
+	}
+	if (link_fd < 0) {
 		fprintf(stderr, "cannot attach XDP to %s: %s\n", iface, strerror(errno));
+		if (errno == EBUSY)
+			fprintf(stderr, "  another program is attached;"
+					" `ip link set dev %s xdp off` clears it\n", iface);
 		goto out_obj;
 	}
 
@@ -221,8 +263,9 @@ int main(int argc, char **argv)
 	cap.limit    = limit;
 	cap.verbose  = verbose;
 
-	printf("capturing on %s (%s mode)  filter: %s\n",
-	       iface, drv_mode ? "native" : "generic", expr);
+	printf("capturing on %s (%s mode%s)  filter: %s\n",
+	       iface, drv_mode ? "native" : "generic",
+	       promisc_fd >= 0 ? ", promiscuous" : "", expr);
 	printf("stopping after %lu packets, writing to %s   (Ctrl+C to stop)\n",
 	       limit, outfile);
 
@@ -247,7 +290,10 @@ int main(int argc, char **argv)
 	rc = 0;
 
 out_detach:
-	bpf_xdp_detach(ifindex, xdp_flags, NULL);
+	/* Closing the link detaches the program. The kernel does this for us if
+	 * we are killed, which is the point of attaching through a link. */
+	if (link_fd >= 0)
+		close(link_fd);
 out_obj:
 	/* The ring buffer holds a dup of the map fd, but tear it down first so
 	 * the order does not depend on that. prog_fd and events_fd belong to the
@@ -258,6 +304,10 @@ out_obj:
 	}
 	bpf_object__close(obj);
 out:
+	/* Closing this drops the promiscuous membership the kernel is counting
+	 * for us - which it also does if we are killed. */
+	if (promisc_fd >= 0)
+		close(promisc_fd);
 	pcap_writer_close(out);
 	cbpfc_expr_free(e);
 	return rc;

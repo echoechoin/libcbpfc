@@ -42,6 +42,7 @@ sudo ./build/examples/xdpdump/xdpdump -i eth0 -n 100 'udp and port 53' -w dns.pc
 -w, --write <file>     output pcap file (default: xdpdump.pcap)
 -o, --object <file>    compiled XDP host object
 -D, --drv              native XDP instead of generic
+-p, --no-promisc       do not put the interface into promiscuous mode
 -t, --timeout <sec>    give up after this long
 -v, --verbose          print one line per captured packet
 ```
